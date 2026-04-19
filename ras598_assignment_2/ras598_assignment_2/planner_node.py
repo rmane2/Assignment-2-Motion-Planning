@@ -1,25 +1,3 @@
-"""
-planner_node.py
-===============
-Main ROS2 navigation node for RAS 598 Assignment 2.
-
-Confirmed from grading_scout.py:
-  - /get_task service type: example_interfaces.srv.Trigger
-  - Response fields: success (bool), message (string "sx,sy,gx,gy")
-  - Start: (-7.0, -7.0)   Goal: (7.0, 2.5)
-  - Goal acceptance radius: 0.5m (scout uses math.dist < 0.5)
-  - Startup tax: 0.6 units, triggered when v goes from <=0.04 to >0.04
-  - Tick rate: 0.1s (10 Hz scout timer)
-  - Energy per tick = (0.05 + v*0.06 + w*0.15 + startup_tax) * 0.5
-
-Energy Optimization (based on exact coefficients above):
-  - angular_coeff (0.15) >> linear_coeff (0.06): minimise turns
-  - startup_tax (0.6) >> motion cost: NEVER stop mid-path
-  - time_penalty (0.05/tick): faster paths save energy
-  - angular.z = exactly 0.0 while driving: zero angular drain
-  - LOS pruning: minimise waypoints -> minimise turns -> minimise taxes
-"""
-
 import math
 import os
 import rclpy
@@ -43,28 +21,24 @@ STATE_DONE   = 'DONE'
 class PlannerNode(Node):
 
     # Params
-    CELL_RESOLUTION   = 0.032     #(0.2) m/cell  — fixed by spec
-    INFLATION_RADIUS  = 0.60 # 0.65    # m       — > 0.6 required
+    Cell_Resolution   = 0.032     #(0.2) m/cell  — fixed by spec
+    Inflation_Radius  = 0.60 # 0.65    # m       — > 0.6 required
 
     # The map image is cloned alongside the package
-    # MAP_IMAGE = os.path.join(
-    #     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    #     'map', 'cave_filled.png'
-    # )
-    MAP_IMAGE = os.path.join(
+    Map_Image = os.path.join(
         get_package_share_directory('ras598_assignment_2'),
         'cave_filled.png'
     )
 
     # Controller thresholds
-    HEADING_THRESH  = 0.08    # rad — switch ROTATE -> DRIVE
-    REDRIVE_THRESH  = 0.20    # rad — switch DRIVE -> ROTATE (avoid jitter)
-    WAYPOINT_DIST   = 0.70 # 0.70 # 0.30    # m   — accept intermediate waypoint
-    GOAL_DIST       = 0.48 # 0.45    # m   — accept final goal (scout uses 0.5m)
-    MAX_LINEAR      = 1.00    # m/s
-    MAX_ANGULAR     = 0.65 # 0.65    # rad/s
-    KP_ANGULAR      = 0.6 # 1.8     # proportional gain
-    CTRL_HZ         = 20      # Hz
+    Heading_Threshold        = 0.08    # rad — switch ROTATE -> DRIVE
+    Re_Drive_Threshold       = 0.20    # rad — switch DRIVE -> ROTATE (avoid jitter)
+    Waypoint_Distance        = 0.70    # 0.70 # 0.30    # m   — accept intermediate waypoint
+    Goal_Distance            = 0.48    # 0.45    # m   — accept final goal (scout uses 0.5m)
+    Max_Linear_Velocity      = 1.00    # m/s
+    Max_Angular_Velocity     = 0.65    # 0.65    # rad/s
+    Gain_Kp_Angular          = 0.6     # 1.8     # proportional gain
+    Control_Frequency        = 20      # Hz
 
     def __init__(self):
         super().__init__('planner_node')
@@ -88,7 +62,7 @@ class PlannerNode(Node):
         self._task_called      = False
 
         # Control loop
-        self.create_timer(1.0 / self.CTRL_HZ, self._control_loop)
+        self.create_timer(1.0 / self.Control_Frequency, self._control_loop)
 
         # Delayed task init (give scout time to come up)
         self.create_timer(2.5, self._init_task)
@@ -98,27 +72,6 @@ class PlannerNode(Node):
     # ==============================================================
     # Task initialisation
     # ==============================================================
-
-    # def _init_task(self):
-    #     if self._task_called:
-    #         return
-    #     self._task_called = True
-
-    #     client = self.create_client(Trigger, '/get_task')
-    #     self.get_logger().info('Waiting for /get_task …')
-    #     if not client.wait_for_service(timeout_sec=15.0):
-    #         self.get_logger().error('/get_task not available!')
-    #         return
-
-    #     future = client.call_async(Trigger.Request())
-    #     rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
-
-    #     if future.result() is None:
-    #         self.get_logger().error('/get_task call failed!')
-    #         return
-
-    #     self.get_logger().info(f'/get_task response: {future.result().message}')
-    #     self._run_planning(future.result().message)
 
     def _init_task(self):
         if self._task_called:
@@ -155,11 +108,11 @@ class PlannerNode(Node):
         )
 
         # Load & inflate map
-        self.get_logger().info(f'Loading map: {self.MAP_IMAGE}')
+        self.get_logger().info(f'Loading map: {self.Map_Image}')
         self.gmap = GridMap(
-            self.MAP_IMAGE,
-            cell_resolution=self.CELL_RESOLUTION,
-            inflation_radius_m=self.INFLATION_RADIUS,
+            self.Map_Image,
+            cell_resolution=self.Cell_Resolution,
+            inflation_radius_m=self.Inflation_Radius,
         )
 
         # World -> cell
@@ -168,10 +121,6 @@ class PlannerNode(Node):
         self.get_logger().info(f'Start cell: {start_cell}  Goal cell: {goal_cell}')
 
         # Validate cells are free
-        # if not self.gmap.is_free_cell(*start_cell):
-        #     self.get_logger().warn('Start cell is inside obstacle! Nudging …')
-        # if not self.gmap.is_free_cell(*goal_cell):
-        #     self.get_logger().warn('Goal cell is inside obstacle! Nudging …')
         if not self.gmap.is_free_cell(*start_cell):
             self.get_logger().warn('Start inside obstacle → nudging')
             start_cell = self.gmap.find_nearest_free(*start_cell)
@@ -185,7 +134,6 @@ class PlannerNode(Node):
             return
 
         self.get_logger().info(f'Nudged Start: {start_cell}, Goal: {goal_cell}')
-
 
 
         # A*
@@ -243,63 +191,6 @@ class PlannerNode(Node):
     # Control loop
     # ==============================================================
 
-    # def _control_loop(self):
-    #     if self.state in (STATE_IDLE, STATE_DONE):
-    #         return
-    #     if self.pose is None:
-    #         return
-    #     if self.wp_idx >= len(self.waypoints):
-    #         self._finish()
-    #         return
-
-    #     rx, ry, ryaw = self.pose
-    #     gx, gy       = self.waypoints[self.wp_idx]
-    #     dx, dy       = gx - rx, gy - ry
-    #     dist         = math.hypot(dx, dy)
-    #     angle        = math.atan2(dy, dx)
-    #     err          = self._wrap(angle - ryaw)
-
-    #     # Is this the final waypoint?
-    #     is_last = (self.wp_idx == len(self.waypoints) - 1)
-    #     accept  = self.GOAL_DIST if is_last else self.WAYPOINT_DIST
-
-    #     # Waypoint acceptance — try NOT to stop
-    #     if dist < accept:
-    #         self.wp_idx += 1
-    #         if self.wp_idx >= len(self.waypoints):
-    #             self._finish()
-    #             return
-    #         # Recompute for new waypoint
-    #         gx, gy   = self.waypoints[self.wp_idx]
-    #         dx, dy   = gx - rx, gy - ry
-    #         angle    = math.atan2(dy, dx)
-    #         err      = self._wrap(angle - ryaw)
-    #         if abs(err) > self.HEADING_THRESH:
-    #             self.state = STATE_ROTATE
-    #         # else keep driving — no stop, no startup tax!
-
-    #     cmd = Twist()
-
-    #     if self.state == STATE_ROTATE:
-    #         if abs(err) <= self.HEADING_THRESH:
-    #             self.state = STATE_DRIVE
-    #         else:
-    #             # Pure rotation — linear stays 0
-    #             omega = self.KP_ANGULAR * err
-    #             omega = max(-self.MAX_ANGULAR, min(self.MAX_ANGULAR, omega))
-    #             cmd.angular.z = omega
-    #             # cmd.linear.x = 0.0  (default)
-
-    #     if self.state == STATE_DRIVE:
-    #         if abs(err) > self.REDRIVE_THRESH:
-    #             self.state = STATE_ROTATE
-    #         else:
-    #             cmd.linear.x  = self.MAX_LINEAR
-    #             cmd.angular.z = 0.0   # exactly zero — no angular energy drain
-
-    #     self.cmd_pub.publish(cmd)
-    #     self._publish_markers()
-
     def _control_loop(self):
         if self.state in (STATE_IDLE, STATE_DONE) or self.pose is None:
             return
@@ -315,11 +206,9 @@ class PlannerNode(Node):
         err          = self._wrap(angle - ryaw)
 
         is_last = (self.wp_idx == len(self.waypoints) - 1)
-        accept  = self.GOAL_DIST if is_last else self.WAYPOINT_DIST
+        accept  = self.Goal_Distance if is_last else self.Waypoint_Distance
 
         # Advance waypoint index without stopping
-        # if dist < accept:
-        #     self.wp_idx += 1
         if dist < accept and abs(err) < 0.3:
             self.wp_idx += 1
             if self.wp_idx >= len(self.waypoints):
@@ -333,26 +222,26 @@ class PlannerNode(Node):
         cmd = Twist()
 
         if self.state == STATE_ROTATE:
-            if abs(err) <= self.HEADING_THRESH:
+            if abs(err) <= self.Heading_Threshold:
                 self.state = STATE_DRIVE
                 omega = 0.0
             else:
                 # Rotate BUT keep a small forward velocity to avoid full stop
-                p_omega = self.KP_ANGULAR * err
-                p_omega = max(-self.MAX_ANGULAR, min(self.MAX_ANGULAR, p_omega))
+                p_omega = self.Gain_Kp_Angular * err
+                p_omega = max(-self.Max_Angular_Velocity, min(self.Max_Angular_Velocity, p_omega))
                 #cmd.angular.z = omega
                 omega = 0.8 * err + 0.2 * (p_omega)
-                cmd.angular.z = max(-self.MAX_ANGULAR, min(self.MAX_ANGULAR, omega))
+                cmd.angular.z = max(-self.Max_Angular_Velocity, min(self.Max_Angular_Velocity, omega))
                 # Keep velocity just above startup threshold so scout never sees v=0
                 #cmd.linear.x  = 0.05
                 if cmd.linear.x < 0.06:
                     cmd.linear.x = 0.06
 
         if self.state == STATE_DRIVE:
-            if abs(err) > self.REDRIVE_THRESH:
+            if abs(err) > self.Re_Drive_Threshold:
                 self.state = STATE_ROTATE
             else:
-                cmd.linear.x  = self.MAX_LINEAR
+                cmd.linear.x  = self.Max_Linear_Velocity
                 cmd.angular.z = 0.0
 
         self.cmd_pub.publish(cmd)
