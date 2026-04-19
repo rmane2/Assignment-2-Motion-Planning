@@ -18,24 +18,6 @@ def prune_path(grid, path):
 
     return pruned
 
-# def prune_path(grid, path):
-#     def greedy(path):
-#         pruned = [path[0]]
-#         i = 0
-#         while i < len(path) - 1:
-#             j = len(path) - 1
-#             while j > i + 1:
-#                 if has_line_of_sight(grid, path[i], path[j]):
-#                     break
-#                 j -= 1
-#             pruned.append(path[j])
-#             i = j
-#         return pruned
-
-#     path = greedy(path)
-#     path = list(reversed(greedy(list(reversed(path)))))
-#     return path
-
 # ==========================================================
 # Bresenham LOS
 # ==========================================================
